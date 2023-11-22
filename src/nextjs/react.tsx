@@ -54,13 +54,13 @@ const reducer = (state: FiefAuthState, action: AuthReducerAction): FiefAuthState
   }
 };
 
-export const useAuthStorageReducer = () => useReducer(
-  reducer,
-  {
-    userinfo: null,
-    accessTokenInfo: null,
-  },
-);
+
+export const useAuthStorageReducer = (initialState?: FiefAuthState) => {
+  // Use initialState if provided, otherwise fall back to the default state
+  const defaultState = { userinfo: null, accessTokenInfo: null };
+  return useReducer(reducer, initialState ?? defaultState);
+};
+
 
 const stub = (): never => {
   throw new Error('You forgot to wrap your component in <FiefAuthProvider>.');
@@ -96,6 +96,7 @@ export interface FiefAuthProviderProps {
    */
   currentUserPath: string;
   children?: ReactNode;
+  initialState?: FiefAuthState;
 }
 
 /**
@@ -121,8 +122,8 @@ export interface FiefAuthProviderProps {
  * export default MyApp;
  * ```
  */
-export const FiefAuthProvider: React.FunctionComponent<FiefAuthProviderProps> = (props) => {
-  const [state, dispatch] = useAuthStorageReducer();
+export const FiefAuthProvider: React.FunctionComponent<FiefAuthProviderProps> = (props: { initialState: FiefAuthState | undefined; currentUserPath: any; children: any; }) => {
+  const [state, dispatch] = useAuthStorageReducer(props.initialState);
   const refresh = useCallback(async (useCache?: boolean) => {
     const refreshParam = useCache === undefined ? false : !useCache;
     const response = await window.fetch(`${props.currentUserPath}?refresh=${refreshParam}`);
