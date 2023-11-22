@@ -1,16 +1,19 @@
 import fetchMock from 'fetch-mock';
 
 import {
+  encryptionKey, generateToken, signatureKeyPublic, userId,
+} from '../tests/utils';
+import {
   Fief,
+  FiefAccessTokenACRTooLow,
   FiefAccessTokenExpired,
   FiefAccessTokenInvalid,
   FiefAccessTokenMissingPermission,
   FiefAccessTokenMissingScope,
+  FiefACR,
   FiefIdTokenInvalid,
+  FiefRequestError,
 } from './client';
-import {
-  generateToken, signatureKeyPublic, encryptionKey, userId,
-} from '../tests/utils';
 import { getCrypto } from './crypto';
 
 const mockFetch = fetchMock.sandbox();
@@ -64,6 +67,17 @@ beforeEach(() => {
 });
 
 describe('getAuthURL', () => {
+  it('should throw an error if getOpenIDConfiguration fails', async () => {
+    mockFetch.get('path:/.well-known/openid-configuration', { status: 400, body: { detail: 'Error' } }, { overwriteRoutes: true });
+
+    expect.assertions(1);
+    try {
+      await fief.getAuthURL({ redirectURI: 'https://www.bretagne.duchy/callback' });
+    } catch (err) {
+      expect(err).toBeInstanceOf(FiefRequestError);
+    }
+  });
+
   it.each(
     [
       [{}, ''],
@@ -224,6 +238,15 @@ describe('authRefreshToken', () => {
 });
 
 describe('validateAccessToken', () => {
+  it('should reject invalid token', async () => {
+    expect.assertions(1);
+    try {
+      await fief.validateAccessToken('INVALID_TOKEN');
+    } catch (err) {
+      expect(err).toBeInstanceOf(FiefAccessTokenInvalid);
+    }
+  });
+
   it('should reject invalid signature', async () => {
     expect.assertions(1);
     try {
@@ -243,7 +266,7 @@ describe('validateAccessToken', () => {
   });
 
   it('should reject expired access token', async () => {
-    const newAccessToken = await generateToken(false, { scope: 'openid', permissions: [] }, 0);
+    const newAccessToken = await generateToken(false, { scope: 'openid', acr: FiefACR.LEVEL_ZERO, permissions: [] }, 0);
 
     expect.assertions(1);
     try {
@@ -254,7 +277,7 @@ describe('validateAccessToken', () => {
   });
 
   it('should reject if missing required scope', async () => {
-    const newAccessToken = await generateToken(false, { scope: 'openid', permissions: [] });
+    const newAccessToken = await generateToken(false, { scope: 'openid', acr: FiefACR.LEVEL_ZERO, permissions: [] });
 
     expect.assertions(1);
     try {
@@ -265,35 +288,61 @@ describe('validateAccessToken', () => {
   });
 
   it('should validate token with right scope', async () => {
-    const newAccessToken = await generateToken(false, { scope: 'openid offline_access', permissions: [] });
+    const newAccessToken = await generateToken(false, { scope: 'openid offline_access', acr: FiefACR.LEVEL_ZERO, permissions: [] });
 
     const info = await fief.validateAccessToken(newAccessToken, ['openid', 'offline_access']);
     expect(info).toStrictEqual({
       id: userId,
       scope: ['openid', 'offline_access'],
+      acr: FiefACR.LEVEL_ZERO,
+      permissions: [],
+      access_token: newAccessToken,
+    });
+  });
+
+  it('should reject if invalid ACR', async () => {
+    const newAccessToken = await generateToken(false, { scope: 'openid', acr: FiefACR.LEVEL_ZERO, permissions: [] });
+
+    expect.assertions(1);
+    try {
+      await fief.validateAccessToken(newAccessToken, undefined, FiefACR.LEVEL_ONE);
+    } catch (err) {
+      expect(err).toBeInstanceOf(FiefAccessTokenACRTooLow);
+    }
+  });
+
+  it('should validate token with right ACR', async () => {
+    const newAccessToken = await generateToken(false, { scope: 'openid', acr: FiefACR.LEVEL_ONE, permissions: [] });
+
+    const info = await fief.validateAccessToken(newAccessToken, undefined, FiefACR.LEVEL_ONE);
+    expect(info).toStrictEqual({
+      id: userId,
+      scope: ['openid'],
+      acr: FiefACR.LEVEL_ONE,
       permissions: [],
       access_token: newAccessToken,
     });
   });
 
   it('should reject if missing required permission', async () => {
-    const newAccessToken = await generateToken(false, { scope: 'openid', permissions: ['castles:read'] });
+    const newAccessToken = await generateToken(false, { scope: 'openid', acr: FiefACR.LEVEL_ZERO, permissions: ['castles:read'] });
 
     expect.assertions(1);
     try {
-      await fief.validateAccessToken(newAccessToken, undefined, ['castles:create']);
+      await fief.validateAccessToken(newAccessToken, undefined, undefined, ['castles:create']);
     } catch (err) {
       expect(err).toBeInstanceOf(FiefAccessTokenMissingPermission);
     }
   });
 
   it('should validate token with right permissions', async () => {
-    const newAccessToken = await generateToken(false, { scope: 'openid', permissions: ['castles:read', 'castles:create'] });
+    const newAccessToken = await generateToken(false, { scope: 'openid', acr: FiefACR.LEVEL_ZERO, permissions: ['castles:read', 'castles:create'] });
 
-    const info = await fief.validateAccessToken(newAccessToken, undefined, ['castles:create']);
+    const info = await fief.validateAccessToken(newAccessToken, undefined, undefined, ['castles:create']);
     expect(info).toStrictEqual({
       id: userId,
       scope: ['openid'],
+      acr: FiefACR.LEVEL_ZERO,
       permissions: ['castles:read', 'castles:create'],
       access_token: newAccessToken,
     });
@@ -309,11 +358,32 @@ describe('userinfo', () => {
   });
 });
 
-describe('updateProfile', () => {
-  it('should return data from userinfo endpoint', async () => {
-    mockFetch.patch('path:/api/profile', { status: 200, body: { sub: userId } });
+describe.each<[string, keyof Fief, [string, any]]>([
+  ['/api/profile', 'updateProfile', ['ACCESS_TOKEN', { fields: { first_name: 'Anne' } }]],
+  ['/api/password', 'changePassword', ['ACCESS_TOKEN', 'herminetincture']],
+  ['/api/email/change', 'emailChange', ['ACCESS_TOKEN', 'anne@nantes.city']],
+  ['/api/email/verify', 'emailVerify', ['ACCESS_TOKEN', 'ABCDE']],
+])('update user methods', (endpoint, methodName, args) => {
+  it('should throw FiefRequestError on API error', async () => {
+    mockFetch.mock(`path:${endpoint}`, { status: 400, body: { detail: 'error' } });
 
-    const userinfo = await fief.updateProfile('ACCESS_TOKEN', { email: 'anne@bretagne.duchy' });
+    expect.assertions(1);
+    try {
+      const method = fief[methodName].bind(fief);
+      // @ts-ignore
+      await method(...args);
+    } catch (err) {
+      expect(err).toBeInstanceOf(FiefRequestError);
+    }
+  });
+
+  it('should return userinfo on success', async () => {
+    mockFetch.mock(`path:${endpoint}`, { status: 200, body: { sub: userId } });
+
+    const method = fief[methodName].bind(fief);
+    // @ts-ignore
+    const userinfo = await method(...args);
+
     expect(userinfo).toStrictEqual({ sub: userId });
   });
 });

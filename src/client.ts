@@ -14,6 +14,27 @@ const serializeQueryString = (object: Record<string, string>): string => {
 };
 
 /**
+ * List of defined Authentication Context Class Reference.
+ */
+// eslint-disable-next-line no-shadow
+export enum FiefACR {
+  /**
+   * Level 0. No authentication was performed, a previous session was used.
+   */
+  LEVEL_ZERO = '0',
+  /**
+   * Level 1. Password authentication was performed.
+   */
+  LEVEL_ONE = '1',
+}
+
+const ACR_LEVELS_ORDER: FiefACR[] = [FiefACR.LEVEL_ZERO, FiefACR.LEVEL_ONE];
+
+const compareACR = (a: FiefACR, b: FiefACR): number => (
+  ACR_LEVELS_ORDER.findIndex((acr) => acr === a) - ACR_LEVELS_ORDER.findIndex((acr) => acr === b)
+);
+
+/**
  * Object containing the tokens and related information
  * returned by Fief after a successful authentication.
  */
@@ -46,7 +67,7 @@ export interface FiefTokenResponse {
 }
 
 /**
- * Typed dictionary containing information about the access token.
+ * Object containing information about the access token.
  *
  * **Example:**
  *
@@ -54,6 +75,7 @@ export interface FiefTokenResponse {
  * {
  *     "id": "aeeb8bfa-e8f4-4724-9427-c3d5af66190e",
  *     "scope": ["openid", "required_scope"],
+ *     "acr": "1",
  *     "permissions": ["castles:read", "castles:create", "castles:update", "castles:delete"],
  *     "access_token": "ACCESS_TOKEN",
  * }
@@ -71,6 +93,11 @@ export interface FiefAccessTokenInfo {
   scope: string[];
 
   /**
+   * Level of Authentication Context class Reference.
+   */
+  acr: FiefACR;
+
+  /**
    * List of [granted permissions](https://docs.fief.dev/getting-started/access-control/) for this user.
    */
   permissions: string[];
@@ -82,7 +109,7 @@ export interface FiefAccessTokenInfo {
 }
 
 /**
- * Dictionary containing user information.
+ * Object containing user information.
  *
  *
  * **Example:**
@@ -121,11 +148,54 @@ export interface FiefUserInfo extends jose.JWTPayload {
   fields: Record<string, any>;
 }
 
+/**
+ * Base Fief client error.
+ */
 export class FiefError extends Error { }
+
+/**
+ * The request to Fief server resulted in an error.
+ */
+export class FiefRequestError extends FiefError {
+  public status: number;
+
+  public detail: string;
+
+  constructor(status: number, detail: string) {
+    super(`[${status}] - ${detail}`);
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
+/**
+ * The access token is invalid.
+ */
 export class FiefAccessTokenInvalid extends FiefError { }
+
+/**
+ * The access token is expired.
+ */
 export class FiefAccessTokenExpired extends FiefError { }
+
+/**
+ * The access token is missing a required scope.
+ */
 export class FiefAccessTokenMissingScope extends FiefError { }
+
+/**
+ * The access token doesn't meet the minimum ACR level.
+ */
+export class FiefAccessTokenACRTooLow extends FiefError { }
+
+/**
+ * The access token is missing a required permission.
+ */
 export class FiefAccessTokenMissingPermission extends FiefError { }
+
+/**
+ * The ID token is invalid.
+ */
 export class FiefIdTokenInvalid extends FiefError { }
 
 /**
@@ -311,6 +381,7 @@ export class Fief {
         },
       },
     );
+    await Fief.handleRequestError(response);
     const data: FiefTokenResponse = await response.json();
 
     const userinfo = await this.decodeIDToken({
@@ -361,6 +432,7 @@ export class Fief {
         },
       },
     );
+    await Fief.handleRequestError(response);
     const data: FiefTokenResponse = await response.json();
 
     const userinfo = await this.decodeIDToken({
@@ -378,6 +450,7 @@ export class Fief {
    *
    * @param accessToken - The access token to validate.
    * @param requiredScopes - Optional list of scopes to check for.
+   * @param requiredACR - Optional minimum ACR level required. Read more: https://docs.fief.dev/going-further/acr/
    * @param requiredPermissions - Optional list of permissions to check for.
    *
    * @returns {@link FiefAccessTokenInfo}
@@ -405,6 +478,7 @@ export class Fief {
   public async validateAccessToken(
     accessToken: string,
     requiredScopes?: string[],
+    requiredACR?: FiefACR,
     requiredPermissions?: string[],
   ): Promise<FiefAccessTokenInfo> {
     const signatureKeys = jose.createLocalJWKSet(await this.getJWKS());
@@ -428,6 +502,16 @@ export class Fief {
         });
       }
 
+      const acr = claims.acr as (FiefACR | undefined);
+      if (acr === undefined || !Object.values(FiefACR).includes(acr)) {
+        throw new FiefAccessTokenInvalid();
+      }
+      if (requiredACR) {
+        if (compareACR(acr, requiredACR) < 0) {
+          throw new FiefAccessTokenACRTooLow();
+        }
+      }
+
       const permissions = claims.permissions as (string[] | undefined);
       if (permissions === undefined) {
         throw new FiefAccessTokenInvalid();
@@ -446,6 +530,7 @@ export class Fief {
       return {
         id: claims.sub as string,
         scope: accessTokenScopes,
+        acr,
         permissions,
         access_token: accessToken,
       };
@@ -482,6 +567,7 @@ export class Fief {
         },
       },
     );
+    await Fief.handleRequestError(response);
     const data: FiefUserInfo = await response.json();
     return data;
   }
@@ -493,18 +579,6 @@ export class Fief {
    * @param data - An object containing the data to update.
    *
    * @returns Updated user information.
-   *
-   * @example
-   * Update email address
-   * ```ts
-   * userinfo = await fief.updateProfile('ACCESS_TOKEN', { email: 'anne@nantes.city' })
-   * ```
-   *
-   * @example
-   * Update password
-   * ```ts
-   * userinfo = await fief.updateProfile('ACCESS_TOKEN', { password: 'hermine1' })
-   * ```
    *
    * @example
    * To update [user field](https://docs.fief.dev/getting-started/user-fields/) values,
@@ -529,6 +603,119 @@ export class Fief {
         },
       },
     );
+    await Fief.handleRequestError(response);
+    const userinfo = await response.json();
+    return userinfo;
+  }
+
+  /**
+   * Changes the user password with the Fief API using a valid access token.
+   *
+   * **An access token with an ACR of at least level 1 is required.**
+   *
+   * @param accessToken - A valid access token.
+   * @param newPassword - The new password.
+   *
+   * @returns Updated user information.
+   *
+   * @example
+   * ```ts
+   * userinfo = await fief.changePassword('ACCESS_TOKEN', 'herminetincture')
+   * ```
+   */
+  public async changePassword(
+    accessToken: string,
+    newPassword: string,
+  ): Promise<FiefUserInfo> {
+    const updateProfileEndpoint = `${this.baseURL}/api/password`;
+    const response = await this.fetch(
+      updateProfileEndpoint,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ password: newPassword }),
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+        },
+      },
+    );
+    await Fief.handleRequestError(response);
+    const userinfo = await response.json();
+    return userinfo;
+  }
+
+  /**
+   * Requests an email change with the Fief API using a valid access token.
+   *
+   * The user will receive a verification code on this new email address.
+   * It shall be used with the method {@link emailVerify} to complete the modification.
+   *
+   * **An access token with an ACR of at least level 1 is required.**
+   *
+   * @param accessToken - A valid access token.
+   * @param newPassword - The new email address.
+   *
+   * @returns Updated user information.
+   *
+   * @example
+   * ```ts
+   * userinfo = await fief.emailChange('ACCESS_TOKEN', 'anne@nantes.city')
+   * ```
+   */
+  public async emailChange(
+    accessToken: string,
+    email: string,
+  ): Promise<FiefUserInfo> {
+    const updateProfileEndpoint = `${this.baseURL}/api/email/change`;
+    const response = await this.fetch(
+      updateProfileEndpoint,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ email }),
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+        },
+      },
+    );
+    await Fief.handleRequestError(response);
+    const userinfo = await response.json();
+    return userinfo;
+  }
+
+  /**
+   * Verifies the user email with the Fief API using a valid access token and verification code.
+   *
+   *
+   * **An access token with an ACR of at least level 1 is required.**
+   *
+   * @param accessToken - A valid access token.
+   * @param newPassword - The new email address.
+   *
+   * @returns Updated user information.
+   *
+   * @example
+   * ```ts
+   * userinfo = await fief.emailVerify('ACCESS_TOKEN', 'ABCDE')
+   * ```
+   */
+  public async emailVerify(
+    accessToken: string,
+    code: string,
+  ): Promise<FiefUserInfo> {
+    const updateProfileEndpoint = `${this.baseURL}/api/email/verify`;
+    const response = await this.fetch(
+      updateProfileEndpoint,
+      {
+        method: 'POST',
+        body: JSON.stringify({ code }),
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+        },
+      },
+    );
+    await Fief.handleRequestError(response);
     const userinfo = await response.json();
     return userinfo;
   }
@@ -568,6 +755,9 @@ export class Fief {
         method: 'GET',
       },
     );
+
+    await Fief.handleRequestError(response);
+
     const data = response.json();
     this.openIDConfiguration = data;
     return data;
@@ -584,6 +774,7 @@ export class Fief {
         method: 'GET',
       },
     );
+    await Fief.handleRequestError(response);
     const data: jose.JSONWebKeySet = await response.json();
     this.jwks = data;
     return data;
@@ -633,6 +824,13 @@ export class Fief {
         throw new FiefIdTokenInvalid();
       }
       throw err;
+    }
+  }
+
+  private static async handleRequestError(response: Response) {
+    if (response.status < 200 || response.status > 299) {
+      const detail = await response.text();
+      throw new FiefRequestError(response.status, detail);
     }
   }
 }

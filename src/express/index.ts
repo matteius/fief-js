@@ -3,7 +3,7 @@
  *
  * @module
  */
-import { Request, Response, NextFunction } from 'express';
+import { NextFunction, Request, Response } from 'express';
 
 import {
   Fief,
@@ -12,13 +12,13 @@ import {
 } from '../client';
 import {
   AuthenticateRequestParameters,
+  authorizationSchemeGetter,
+  cookieGetter,
   FiefAuth,
   FiefAuthForbidden,
   FiefAuthUnauthorized,
   IUserInfoCache,
   TokenGetter,
-  authorizationSchemeGetter,
-  cookieGetter,
 } from '../server';
 
 declare global {
@@ -129,10 +129,21 @@ export interface FiefAuthParameters {
  * );
  * ```
  *
+ * @example Minimum ACR level
+ * ```ts
+ * app.get(
+ *     '/authenticated-acr',
+ *     fiefAuthMiddleware({ acr: FiefACR.LEVEL_ONE }),
+ *     (req, res) => {
+ *         res.json(req.accessTokenInfo);
+ *     },
+ * );
+ * ```
+ *
  * @example Required permissions
  * ```ts
  * app.get(
- *     '/authenticated-scope',
+ *     '/authenticated-permission',
  *     fiefAuthMiddleware({ permissions: ['castles:create'] }),
  *     (req, res) => {
  *         res.json(req.accessTokenInfo);
@@ -183,9 +194,9 @@ const createMiddleware = (parameters: FiefAuthParameters) => {
 
 export {
   AuthenticateRequestParameters,
-  IUserInfoCache,
-  TokenGetter,
   authorizationSchemeGetter,
   cookieGetter,
   createMiddleware,
+  IUserInfoCache,
+  TokenGetter,
 };

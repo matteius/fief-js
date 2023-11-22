@@ -1,19 +1,21 @@
-import httpMocks from 'node-mocks-http';
 import { NextApiRequest, NextApiResponse } from 'next';
 import { NextRequest } from 'next/server';
+import httpMocks from 'node-mocks-http';
 
+import { userId } from '../../tests/utils';
 import {
   Fief,
+  FiefAccessTokenACRTooLow,
   FiefAccessTokenExpired,
   FiefAccessTokenInfo,
   FiefAccessTokenMissingPermission,
   FiefAccessTokenMissingScope,
+  FiefACR,
   FiefTokenResponse,
   FiefUserInfo,
 } from '../client';
-import { userId } from '../../tests/utils';
-import { FiefAuth } from './index';
 import { AuthenticateRequestResult, IUserInfoCache } from '../server';
+import { FiefAuth } from './index';
 
 class UserInfoCache implements IUserInfoCache {
   private storage: Record<string, any>;
@@ -56,6 +58,7 @@ const authCallbackMock = jest.fn(() => [tokenInfo, { sub: userId }]);
 const accessTokenInfo: FiefAccessTokenInfo = {
   id: userId,
   scope: ['openid'],
+  acr: FiefACR.LEVEL_ZERO,
   permissions: [],
   access_token: 'ACCESS_TOKEN',
 };
@@ -115,6 +118,12 @@ describe('middleware', () => {
       },
     },
     {
+      matcher: '/authenticated-acr',
+      parameters: {
+        acr: FiefACR.LEVEL_ONE,
+      },
+    },
+    {
       matcher: '/authenticated-permission',
       parameters: {
         permissions: ['castles:create'],
@@ -122,7 +131,7 @@ describe('middleware', () => {
     },
   ]);
 
-  describe('logout', () => {
+  describe('login', () => {
     it('should redirect to Fief authentication URL', async () => {
       const request = new NextRequest('http://localhost:3000/login');
       const response = await middleware(request);
@@ -156,6 +165,15 @@ describe('middleware', () => {
   });
 
   describe('logout', () => {
+    it('should do nothing and just return empty response on prefetch', async () => {
+      const request = new NextRequest('http://localhost:3000/logout', { headers: { 'X-Middleware-Prefetch': '1' } });
+      const response = await middleware(request);
+
+      expect(response.status).toBe(204);
+
+      expect(response.cookies.get('user_session')).toBeUndefined();
+    });
+
     it('should clear session cookie and redirect to Fief logout URL', async () => {
       const request = new NextRequest('http://localhost:3000/logout');
       const response = await middleware(request);
@@ -188,6 +206,18 @@ describe('middleware', () => {
       expect(response.headers.get('Location')).toEqual('https://bretagne.fief.dev/authorize');
 
       expect(response.cookies.get('return_to')?.value).toEqual('/authenticated');
+    });
+
+    it('should preserve query parameters in return_to URL', async () => {
+      validateAccessTokenMock.mockRejectedValueOnce(new FiefAccessTokenExpired() as never);
+      const request = new NextRequest('http://localhost:3000/authenticated?query1=value1&query2=value2');
+      request.cookies.set('user_session', 'ACCESS_TOKEN');
+      const response = await middleware(request);
+
+      expect(response.status).toBe(307);
+      expect(response.headers.get('Location')).toEqual('https://bretagne.fief.dev/authorize');
+
+      expect(response.cookies.get('return_to')?.value).toEqual('/authenticated?query1=value1&query2=value2');
     });
 
     it('should return the default response if valid token', async () => {
@@ -263,6 +293,7 @@ describe('authenticated', () => {
     expect(req.accessTokenInfo).toEqual({
       id: userId,
       scope: ['openid'],
+      acr: FiefACR.LEVEL_ZERO,
       permissions: [],
       access_token: 'ACCESS_TOKEN',
     });
@@ -294,6 +325,7 @@ describe('authenticated', () => {
       expect(req.accessTokenInfo).toEqual({
         id: userId,
         scope: ['openid'],
+        acr: FiefACR.LEVEL_ZERO,
         permissions: [],
         access_token: 'ACCESS_TOKEN',
       });
@@ -319,6 +351,36 @@ describe('authenticated', () => {
       expect(req.accessTokenInfo).toEqual({
         id: userId,
         scope: ['openid', 'required_scope'],
+        acr: FiefACR.LEVEL_ZERO,
+        permissions: [],
+        access_token: 'ACCESS_TOKEN',
+      });
+    });
+  });
+
+  describe('acr', () => {
+    it('should throw 403 if invalid ACR', async () => {
+      validateAccessTokenMock.mockRejectedValueOnce(new FiefAccessTokenACRTooLow() as never);
+      const { req, res } = getMockAPIContext({ method: 'GET', headers: { cookie: 'user_session=ACCESS_TOKEN' } });
+
+      await fiefAuth.authenticated(getMockNextAPIHandler(), { acr: FiefACR.LEVEL_ZERO })(req, res);
+
+      expect(res.statusCode).toEqual(403);
+    });
+
+    it('should set accessTokenInfo in Request object if valid ACR', async () => {
+      validateAccessTokenMock.mockImplementationOnce(() => ({
+        ...accessTokenInfo,
+        acr: FiefACR.LEVEL_ONE,
+      }));
+      const { req, res } = getMockAPIContext({ method: 'GET', headers: { cookie: 'user_session=ACCESS_TOKEN' } });
+
+      await fiefAuth.authenticated(getMockNextAPIHandler(), { acr: FiefACR.LEVEL_ONE })(req, res);
+
+      expect(req.accessTokenInfo).toEqual({
+        id: userId,
+        scope: ['openid'],
+        acr: FiefACR.LEVEL_ONE,
         permissions: [],
         access_token: 'ACCESS_TOKEN',
       });
@@ -345,6 +407,7 @@ describe('authenticated', () => {
       expect(req.accessTokenInfo).toEqual({
         id: userId,
         scope: ['openid'],
+        acr: FiefACR.LEVEL_ZERO,
         permissions: ['castles:read', 'castles:create'],
         access_token: 'ACCESS_TOKEN',
       });

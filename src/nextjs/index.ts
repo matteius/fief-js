@@ -3,7 +3,7 @@
  *
  * @module
  */
-import { IncomingMessage, OutgoingMessage } from 'http';
+import type { IncomingMessage, OutgoingMessage } from 'http';
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { NextRequest, NextResponse } from 'next/server';
 import { pathToRegexp } from 'path-to-regexp';
@@ -16,22 +16,12 @@ import {
 import {
   AuthenticateRequestParameters,
   AuthenticateRequestResult,
+  cookieGetter,
   FiefAuth as FiefAuthServer,
   FiefAuthForbidden,
   FiefAuthUnauthorized,
   IUserInfoCache,
-  cookieGetter,
 } from '../server';
-import {
-  FiefAuthContext,
-  FiefAuthProvider,
-  FiefAuthProviderProps,
-  useFiefAccessTokenInfo,
-  useFiefIsAuthenticated,
-  useFiefRefresh,
-  useFiefUserinfo,
-
-} from './react';
 
 const defaultAPIUnauthorizedResponse = async (req: NextApiRequest, res: NextApiResponse) => {
   res.status(401).send('Unauthorized');
@@ -302,13 +292,19 @@ class FiefAuth {
    *   {
    *     matcher: '/scope',
    *     parameters: {
-   *         scope: ['required_scope']
+   *         scope: ['required_scope'],
+   *     },
+   *   },
+   *   {
+   *     matcher: '/acr',
+   *     parameters: {
+   *         acr: FiefACR.LEVEL_ONE,
    *     },
    *   },
    *   {
    *     matcher: '/permission',
    *     parameters: {
-   *         permissions: ['castles:create']
+   *         permissions: ['castles:create'],
    *     },
    *   },
    * ]);
@@ -324,14 +320,27 @@ class FiefAuth {
       authenticate: this.fiefAuthEdge.authenticate(parameters),
     }));
     return async (request: NextRequest): Promise<NextResponse> => {
+      const isPrefetchRequest = request.headers.get('X-Middleware-Prefetch') === '1';
+
       // Handle login
       if (request.nextUrl.pathname === this.loginPath) {
+        if (isPrefetchRequest) {
+          return new NextResponse(null, { status: 204 });
+        }
         const authURL = await this.client.getAuthURL({ redirectURI: this.redirectURI, scope: ['openid'] });
-        return NextResponse.redirect(authURL);
+        const response = NextResponse.redirect(authURL);
+        const returnTo = request.nextUrl.searchParams.get('return_to');
+        if (returnTo) {
+          response.cookies.set(this.returnToCookieName, returnTo);
+        }
+        return response;
       }
 
       // Handle authentication callback
       if (request.nextUrl.pathname === this.redirectPath) {
+        if (isPrefetchRequest) {
+          return new NextResponse(null, { status: 204 });
+        }
         const code = request.nextUrl.searchParams.get('code');
         const [tokens] = await this.client.authCallback(code as string, this.redirectURI);
 
@@ -354,6 +363,9 @@ class FiefAuth {
 
       // Handle logout
       if (request.nextUrl.pathname === this.logoutPath) {
+        if (isPrefetchRequest) {
+          return new NextResponse(null, { status: 204 });
+        }
         const logoutURL = await this.client.getLogoutURL({ redirectURI: this.logoutRedirectURI });
         const response = NextResponse.redirect(logoutURL);
         response.cookies.set(this.sessionCookieName, '', { maxAge: 0 });
@@ -378,7 +390,7 @@ class FiefAuth {
             const authURL = await this.client.getAuthURL({ redirectURI: this.redirectURI, scope: ['openid'] });
 
             const response = NextResponse.redirect(authURL);
-            response.cookies.set(this.returnToCookieName, request.nextUrl.pathname);
+            response.cookies.set(this.returnToCookieName, `${request.nextUrl.pathname}${request.nextUrl.search}`);
 
             return response;
           }
@@ -418,6 +430,15 @@ class FiefAuth {
    * export default fiefAuth.authenticated(function handler(req, res) {
    *     res.status(200).json(req.user);
    * }, { scope: ['required_scope'] });
+   * ```
+   *
+   * @example Minimum ACR level
+   * ```ts
+   * import { fiefAuth } from "../../fief"
+   *
+   * export default fiefAuth.authenticated(function handler(req, res) {
+   *     res.status(200).json(req.user);
+   * }, { acr: FiefACR.LEVEL_ONE });
    * ```
    *
    * @example Required permissions
@@ -489,13 +510,6 @@ class FiefAuth {
 
 export {
   AuthenticateRequestParameters,
-  IUserInfoCache,
   FiefAuth,
-  FiefAuthContext,
-  FiefAuthProvider,
-  FiefAuthProviderProps,
-  useFiefAccessTokenInfo,
-  useFiefIsAuthenticated,
-  useFiefRefresh,
-  useFiefUserinfo,
+  IUserInfoCache,
 };

@@ -81,12 +81,12 @@ interface FiefAuthContextType {
 }
 
 // @ts-ignore
-export const FiefAuthContext = createContext<FiefAuthContextType>(stub);
+const FiefAuthContext = createContext<FiefAuthContextType>(stub);
 
 /**
  * {@link FiefAuthProvider} properties.
  */
-export interface FiefAuthProviderProps {
+interface FiefAuthProviderProps {
   /**
    * Path to the current user API.
    *
@@ -122,7 +122,7 @@ export interface FiefAuthProviderProps {
  * export default MyApp;
  * ```
  */
-export const FiefAuthProvider: React.FunctionComponent<FiefAuthProviderProps> = (props: { initialState: FiefAuthState | undefined; currentUserPath: any; children: any; }) => {
+const FiefAuthProvider: React.FunctionComponent<FiefAuthProviderProps> = (props: { initialState: FiefAuthState | undefined; currentUserPath: any; children: any; }) => {
   const [state, dispatch] = useAuthStorageReducer(props.initialState);
   const refresh = useCallback(async (useCache?: boolean) => {
     const refreshParam = useCache === undefined ? false : !useCache;
@@ -155,7 +155,7 @@ export const FiefAuthProvider: React.FunctionComponent<FiefAuthProviderProps> = 
  * const userinfo = useFiefUserinfo();
  * ````
  */
-export const useFiefUserinfo = (): FiefUserInfo | null => {
+const useFiefUserinfo = (): FiefUserInfo | null => {
   const { state } = useContext(FiefAuthContext);
   return state.userinfo;
 };
@@ -170,7 +170,7 @@ export const useFiefUserinfo = (): FiefUserInfo | null => {
  * const accessTokenInfo = useFiefAccessTokenInfo();
  * ```
  */
-export const useFiefAccessTokenInfo = (): FiefAccessTokenInfo | null => {
+const useFiefAccessTokenInfo = (): FiefAccessTokenInfo | null => {
   const { state } = useContext(FiefAuthContext);
   return state.accessTokenInfo;
 };
@@ -185,7 +185,7 @@ export const useFiefAccessTokenInfo = (): FiefAccessTokenInfo | null => {
  * const isAuthenticated = useFiefIsAuthenticated();
  * ```
  */
-export const useFiefIsAuthenticated = (): boolean => {
+const useFiefIsAuthenticated = (): boolean => {
   const accessTokenInfo = useFiefAccessTokenInfo();
   return accessTokenInfo !== null;
 };
@@ -221,7 +221,17 @@ export const useFiefIsAuthenticated = (): boolean => {
  * );
  * ```
  */
-export const useFiefRefresh = (): RefreshFunction => {
+const useFiefRefresh = (): RefreshFunction => {
   const { refresh } = useContext(FiefAuthContext);
   return refresh;
+};
+
+export {
+  FiefAuthContext,
+  FiefAuthProvider,
+  FiefAuthProviderProps,
+  useFiefAccessTokenInfo,
+  useFiefIsAuthenticated,
+  useFiefRefresh,
+  useFiefUserinfo,
 };
